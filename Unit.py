@@ -1,9 +1,18 @@
+##############################################################################
+# Author: Christopher M. Parrett 
+# George Mason University, Department of Computational and Data Sciences
+# Computational Social Science Program
+#
+# Developed on a Windows 10 platform, AMD PhenomII X6 3.3GHz w/ 8GB RAM
+# using Python 3.5.2 | Anaconda 4.2.0 (64-bit).
+##############################################################################
+##############################################################################
 from mesa import Agent, Model
 import datetime as dt
 import numpy as np
 import pandas as pd
 from Billet import *
-from modelenum import *
+from Experience import *
 from BaseAgent import *
 ##############################################################################            
 ##############################################################################
@@ -20,8 +29,14 @@ class Unit(Agent):
         #Default values to be set later
         d = np.random.normal(0.5,0.05)
         self.unitpolicy = {"funcexp":d, "geoexp":(1-d)}
-        self.agg_funcexp = FuncSkillSet() #Aggregated Functional Experience
-        self.agg_geoexp  = RgnlSkillSet() #Aggregated Regional Experience
+        #Functional Organizational Focus and Experience
+        self.agg_funcexp = None  #Aggregated Functional Experience Pandas Dataframe
+        self.funcskills = FuncSkillSet()
+        
+        #Geographic Organizational Focus and Experience
+        self.agg_geoexp = None   #Aggregated Regional Experience Pandas Dataframe
+        self.geoskills = RgnlSkillSet()
+        
         self.TDA = {}
         self.roster = {}
         self.vacann = []
@@ -30,14 +45,19 @@ class Unit(Agent):
 
     ############################################################################  
     #
-    def getgeofocus(self): return self.geofocus
-    def getreqskills(self): return self.reqskills
-    def gethiringpol(self): return self.unitpolicy 
+    def getUIC(self): return self.uic
+    def getcmdno(self): return self.cmdno
     def getname(self): return self.name
-    def getuic(self): return self.uic
+    def getTDA(self): return self.TDA
+    def getroster(self): return self.roster
+    def getvacann(self): return self.vacann
+    def getcivpay(self): return self.civpay
+    def getfillrate(self): return self.fillrate
+    def getgeoskills(self): return self.geoskills
+    def getfuncskills(self): return self.funcskills
     
-    def setgeofocus(self,v): self.geofocus = v
-    def setreqskills(self,v): self.reqskills = v
+    def setgeofocus(self,v): self.geoskills = v
+    def setreqskills(self,v): self.funcskills = v 
     def sethiringpol(self,fexp,gexp=None): 
         if gexp is None or (fexp + gexp != 1.0):
             self.unitpolicy = {"funcexp": fexp, "geoexp":(1.0-fexp)}
@@ -54,7 +74,23 @@ class Unit(Agent):
         if kwargs["OCC"] is not None:
             kwargs["OCC"].PLN = kwargs["PLN"]
             self.AssignEmployee(kwargs["PLN"],kwargs["OCC"])
-                
+            
+    ############################################################################  
+    #    
+    def Initialize(self):
+        self.RecordCivPay()
+        self.RecordFillRate()
+        billets = self.TDA.keys()
+        self.agg_funcexp = pd.DataFrame(index=list(billets),columns=[f.name for f in Functions],data=0.0)
+        self.agg_geoexp = pd.DataFrame(index=list(billets),columns=[r.name for r in Regions],data=0.0)
+        for paraln in billets:
+            eid = self.TDA[paraln].occupant
+            if eid is not None:
+                self.agg_funcexp.loc[paraln] = self.roster[eid].getfuncexparray()
+                self.agg_geoexp.loc[paraln] = self.roster[eid].getgeoexparray()
+            else:
+                self.agg_funcexp.loc[paraln] = np.zeros(len(Functions))
+                self.agg_geoexp.loc[paraln] = np.zeros(len(Regions))
     ############################################################################  
     #
     def AssignEmployee(self,paraln,empagt):
@@ -67,10 +103,21 @@ class Unit(Agent):
     def ReleaseEmployee(self,eid):
         #Remove agent from the schedule
         self.model.RemoveAgent(self.roster[eid])
+        
+        #Get agent's location in the organization
         paraln = self.roster[eid].PLN
+        
+        #Remove experience from the organization
+        self.agg_funcexp.loc[paraln] = np.zeros(len(Functions))
+        self.agg_geoexp.loc[paraln] = np.zeros(len(Regions))
+        
+        #Remove agent from the unit's authorization table
         self.TDA[paraln].Vacate()
+        
+        #Remove agent from the official roster
         self.roster.pop(eid)
     
+                
     ############################################################################  
     #
     def ExtendEmployee(self,eid):
@@ -136,11 +183,19 @@ class Unit(Agent):
         '''
         cur_emps = list(self.roster.keys())
         for eid in cur_emps:
+            #If Agent is retirement eligible, make the decision
+            if self.roster[eid].retire_eligible :
+                if np.random.rand() > 0.80:
+                    #right now, it is based on a random draw at 20% chance... this should increase
+                    self.roster[eid].status = BaseAgent.AGT_STATUS["retired"]
+                    
+            #Run through current roster
             if self.roster[eid].status == BaseAgent.AGT_STATUS["retired"]:
                 print("Employee Retiring: ", self.roster[eid].lastname, " EID: ",eid, " PARALN: ",self.roster[eid].PLN)
                 #Remove from unit
                 self.ReleaseEmployee(eid)
             elif self.roster[eid].status == BaseAgent.AGT_STATUS["assigned"]:
+                #Deal with assigned employees... OCONUS first
                 if self.roster[eid].DEROS is not None:
                     if self.roster[eid].dwell >= (3*365):
                         print("Extending Employee: ", self.roster[eid].lastname, " EID: ",eid)
@@ -156,6 +211,7 @@ class Unit(Agent):
                         print("Extending Employee ",eid," Again")
                     else:
                         self.roster[eid].status = BaseAgent.AGT_STATUS["nonextended"]       
+                        #Employee should go on a placement list somewhere...
             elif self.roster[eid].status == BaseAgent.AGT_STATUS["nonextended"]:
                 if self.roster[eid].dwell >= (2*365):
                     print("Releasing Employee ",eid)

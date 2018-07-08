@@ -1,3 +1,12 @@
+##############################################################################
+# Author: Christopher M. Parrett 
+# George Mason University, Department of Computational and Data Sciences
+# Computational Social Science Program
+#
+# Developed on a Windows 10 platform, AMD PhenomII X6 3.3GHz w/ 8GB RAM
+# using Python 3.5.2 | Anaconda 4.2.0 (64-bit).
+##############################################################################
+##############################################################################
 from mesa import Agent, Model
 import numpy as np
 import pandas as pd

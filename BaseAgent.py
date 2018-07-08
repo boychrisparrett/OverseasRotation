@@ -1,6 +1,7 @@
 ##############################################################################
 # Author: Christopher M. Parrett 
-# Department of Computational and Data Sciences,
+# George Mason University, Department of Computational and Data Sciences
+# Computational Social Science Program
 #
 # Developed on a Windows 10 platform, AMD PhenomII X6 3.3GHz w/ 8GB RAM
 # using Python 3.5.2 | Anaconda 4.2.0 (64-bit).
@@ -10,15 +11,18 @@ import datetime as dt
 import numpy.random as npr
 import pandas as pd
 from Location import *
-#from PayTable import *
-from modelenum import * 
+from Experience import * 
 from mesa import Agent
+
 ##############################################################################            
 ##############################################################################
 # CLASS:: agent_base
 #
 # Purpose: Implements a generic agent in an organization.
 #
+GLBL_AGT_MRA = 57.0
+GLBL_AGT_MIN_TIS = 20.0
+GLBL_AGT_MAX_TIS = 40.0
 class BaseAgent(Agent):
     AGT_ATTR_STR = ["Skills","MssnExperience","Location"]
     AGT_STATUS = {"unassigned":0,"assigned":1, "extended":2, "nonextended":3,"released":4,"retired":5}
@@ -37,34 +41,32 @@ class BaseAgent(Agent):
         self.daysinstep = 1                #Time in current step
         
         #Salary and Benefits information
-        self.type = "GS"
-        self.grade = 7
-        self.series = 132
-        self.paystep = 1
-        self.famsize = 0
-        self.salary = 0.0
-        self.curloc = ""
+        self.type = "GG"                   #Pay Scale... will be GG for now
+        self.grade = 7                     #Base grade is GG-07... prob not
+        self.series = 132                  #Series is typically 0132 for closed system
+        self.paystep = 1                   #Default to base step
+        self.famsize = 0                   #Family size... important for PCS costs
+        self.salary = 0.0                  #Civpay
+        self.curloc = ""                   #Location determines locality supplement 
         
         # Employment related information
-        self.status = BaseAgent.AGT_STATUS["unassigned"]
-        self.joboffer = None
-        self.initiative = npr.randint(1,101) / 100 # Likelihood to move
-        self.retire_eligible = False
+        self.status = BaseAgent.AGT_STATUS["unassigned"]     #Start off unattached
+        self.joboffer = None                                 #Any job offers?
+        self.initiative = npr.normal(0.7,0.05)               #Initiative
+        self.retire_eligible = False                         #Retirement eligble flag
         self.PLN = None
         
         # Agent Interaction Attributes
-        self.unit = "" 
-        self.unit_funcexp = FuncSkillSet()
-        self.unit_rgnlexp = RgnlSkillSet()
-        self.funcexp = FuncSkillSet()
-        self.geoexp = RgnlSkillSet()
-        self.network = None
-        self.personalnet = None
-        self.teammembers = []
+        self.unit = ""                                       #Current Unit
+        self.funcexp = FuncSkillSet()                        #Current Functional Experience
+        self.geoexp = RgnlSkillSet()                         #Current Regional Experience
+        self.network = None                                  #Total network... unbounded
+        self.personalnet = None                              #Employee's personal network
+        self.teammembers = []                                #list of employee's teammember
         
         #records
-        self.salhist = {}
-        self.lochist = {}
+        self.salhist = {}                                    #Employee's salary history
+        self.lochist = {}                                    
         
     ############################################################################  
     # Standard Get / Set Routines to control access to attributes.
@@ -87,6 +89,9 @@ class BaseAgent(Agent):
     def getinitiative(self): return self.initiative
     def getfuncexp(self): return self.funcexp
     def getgeoexp(self): return self.geoexp
+    #for array calculations
+    def getfuncexparray(self): return self.funcexp.getSkillArray()
+    def getgeoexparray(self): return self.geoexp.getSkillArray()
     
     ############################################################################  
     # Network Specific routines
@@ -104,7 +109,6 @@ class BaseAgent(Agent):
             lbn = self.getteammembers()
             self.personalnet = nx.subgraph(self.network,(*nb,*lbn))
             
-    
     ############################################################################  
     # UpdateLocation: Change Agent's location to a different unit
     def UpdateLocation(self, loc, deros):
@@ -168,25 +172,29 @@ class BaseAgent(Agent):
             d = d - dt.timedelta(1)
             self.DEROS = d
             
+        #Calculate service computation date
         d = int(-365 * kwargs["SCD"])
         self.SCD = self.SCD + dt.timedelta(days=(d))
         
+        #Calculate age for minimum retirement age computation
         d = int(-365 * kwargs["AGE"])
         self.DoB = self.DoB + dt.timedelta(days=(d))
-        self.daysinstep =kwargs["TIG"]
-        self.lastname=kwargs["LNM"]
-        self.type = kwargs["TYP"]
-        self.grade = kwargs["GRD"]
-        self.series = kwargs["SER"]
-        self.paystep = kwargs["STP"]
-        self.famsize = kwargs["FMS"]
-        self.UpdateLocation(kwargs["LOC"], d)
-        self.InitFunctionalExp(kwargs["FEX"])
-        self.InitGeographicExp(kwargs["GEX"])
-        self.UpdateSalary(kwargs["SAL"])
-        self.dwell = kwargs["DWL"]
-        self.status = BaseAgent.AGT_STATUS["assigned"]
+        
+        self.daysinstep =kwargs["TIG"]         #Days in current time step
+        self.lastname=kwargs["LNM"]            #Last name for human reading
+        self.type = kwargs["TYP"]              #Employee type (e.g. - GS, GG, WG)
+        self.grade = kwargs["GRD"]             #Grade/category for pay ranges
+        self.series = kwargs["SER"]            #Occupational specialty
+        self.paystep = kwargs["STP"]           #Current pay step
+        self.famsize = kwargs["FMS"]           #Family size... for moving costs.
+        self.UpdateLocation(kwargs["LOC"], d)  #Location... local market supplement (LMS)
+        self.InitFunctionalExp(kwargs["FEX"])  #Functional experience
+        self.InitGeographicExp(kwargs["GEX"])  #Geographic experience
+        self.UpdateSalary(kwargs["SAL"])       #Current salary based on grade-step + LMS
+        self.dwell = kwargs["DWL"]             #Current time at current duty station
         self.unit = kwargs["UNT"]
+        self.status = BaseAgent.AGT_STATUS["assigned"]
+        
         
     ############################################################################  
     #
@@ -194,24 +202,31 @@ class BaseAgent(Agent):
         # print("BaseAgent::Step")
         # Is it in a new area with more pay?
         # if job has my skills, will I apply?
-        if self.status ==  BaseAgent.AGT_STATUS["assigned"] or self.status == BaseAgent.AGT_STATUS["extended"] or self.status ==  BaseAgent.AGT_STATUS["nonextended"]:
-            
+        if (self.status ==  BaseAgent.AGT_STATUS["assigned"] or self.status == 
+            BaseAgent.AGT_STATUS["extended"] or self.status ==  BaseAgent.AGT_STATUS["nonextended"]):
+            #Agent is still active in the organization....
             self.dwell += 1
             self.daysinstep += 1
             timeinservice = (self.model.date - self.SCD).days / 365
             age = (self.model.date - self.DoB).days / 365
-            if (timeinservice > 20.0) and (age > 55):
+            if (timeinservice > GLBL_AGT_MIN_TIS) and (age > GLBL_AGT_MRA):
                 self.retire_eligible = True
                 print("\t **** Retirement Eligible ****")
-                self.status = BaseAgent.AGT_STATUS["retired"]
-
+                                
             #Calculate time for within grade increase... simplistic
             if self.paystep != self.model.paytable.GetStep(self.paystep, self.daysinstep):
                 print("Employee WGI: ", self.UPI)
                 self.paystep += 1
                 self.daysinstep = 1
                 self.salary = self.model.paytable.GetSalVal(self.curloc,self.grade,self.paystep)
-
+            
+        elif  self.status == BaseAgent.AGT_STATUS["unassigned"]:
+            print("unassigned")
+            #Degrade skills
+        elif self.status ==  BaseAgent.AGT_STATUS["retired"] or self.status ==  BaseAgent.AGT_STATUS["released"]:
+            #This should not ever be entered... 
+            print("ALERT: Accessing retired or released employee")
+            
     ############################################################################  
     #
     def PrettyPrint(self):

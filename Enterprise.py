@@ -1,3 +1,12 @@
+##############################################################################
+# Author: Christopher M. Parrett 
+# George Mason University, Department of Computational and Data Sciences
+# Computational Social Science Program
+#
+# Developed on a Windows 10 platform, AMD PhenomII X6 3.3GHz w/ 8GB RAM
+# using Python 3.5.2 | Anaconda 4.2.0 (64-bit).
+##############################################################################
+##############################################################################
 import datetime as dt
 import pandas as pd
 import networkx as nx
@@ -10,6 +19,10 @@ from PayTable import *
 from mesa import Model, Agent
 from mesa.time import RandomActivation
 
+
+##############################################################################
+# ReadNetLayout
+#
 def ReadNetLayout(file):
     G = nx.DiGraph()
     retlay = nx.random_layout(G)
@@ -23,28 +36,39 @@ def ReadNetLayout(file):
             G.add_edge(int(flds[0]),int(flds[1]),weight=float(flds[2]))
         else:
             pass
-    return G, retlay   
+    return G, retlay
 
+##############################################################################
+# CLASS:: Enterprise
+#
+#  Purpose: Implements a generic agent in an organization.
+# Requires: FEX, FEXWGHTS, GEX, GEXWGHTS, UNIT, BILLET, LOC, EXP, LAG
 class Enterprise(Model):
+    ##########################################################################        
+    #
     def __init__(self,basedate):
         super().__init__(1)
-        self.date = basedate
-        self.num_baseagents = 0
-        self.num_locations = 0
-        self.locations = {}
-        self.schedule = RandomActivation(self)
-        self.paytable = PayTable("2018-general-schedule-pay-rates.csv")
-        self.units = {}
-        self.deadpool = []
-        #
-        #self.jobboard = JobBoard(0,self)
-        #self.schedule.add(self.jobboard)
+        self.date = basedate                           #Model Start Date
+        self.num_baseagents = 0                        #Number of Agents
+        self.num_locations = 0                         #Number of Locations
+        self.num_units = 0                             #Number of Units
+        self.locations = {}                            #Dictionary of Locations
+        self.units = {}                                #Dictionary of Units
+        self.deadpool = {"retired":[],"released":[]}   #Employee history
+        self.paytable = None                           #Enterprise Pay Scale
+        self.jobboard = None                           #Job Board
+        self.agt_network = nx.Graph()                  #Network of agents
+        self.unit_network = nx.DiGraph()               #Organizational Structure
+        self.unit_displaypos = None                    #Display units
+        self.schedule = RandomActivation(self)         #MESA Activation Schedule
+    
+    ##########################################################################        
+    #
+    def Setup(self):
         
-        self.agt_network = nx.Graph()
-        self.unit_network = nx.DiGraph()
-        self.unit_displaypos = None
-        
-    def LoadData(self):
+        # Load Enterprise Pay Scale from file
+        try: self.paytable = PayTable("2018-general-schedule-pay-rates.csv")
+        except: print("Error loading Pay Table!")
         
         #Read in locations data
         #--> LOC, GLC, LMS, OPP, OCN, ACT, OPP
@@ -55,7 +79,7 @@ class Enterprise(Model):
         for l in locs.index:
             loc_params = {"GLC":locs.loc[l]["GLC"],"OPP":locs.loc[l]["OPP"],"OCN":locs.loc[l]["OCN"],
                           "LMS":locs.loc[l]["LMS"],"ACT":locs.loc[l]["ACT"]}
-            loc = Location(locs.loc[l]["LOC"],self,**loc_params)
+            loc = Location(locs.loc[l]["LOC"],**loc_params)
             self.locations[locs.loc[l]["LOC"]] = loc
             self.num_locations+=1
         
@@ -105,10 +129,6 @@ class Enterprise(Model):
                     
                     newagt.NewPosition(**emp_dict)
                     
-                    #Unit aggregate experience
-                    newunit.agg_funcexp.add(newagt.getfuncexp())
-                    newunit.agg_geoexp.add(newagt.getgeoexp())
-                    
                     #Forceset the dwell on initialization
                     newagt.setdwell(myo.loc[uid]["DWL"])
                     
@@ -124,18 +144,19 @@ class Enterprise(Model):
                     #Add Employee agent to scheduler
                     self.schedule.add(newagt)
                 
-                # Place billet and occupant into TDA
+                #Place billet and occupant into TDA
                 #build required parameter string
                 tda_dict = {"OCC":newagt,"KEY":False}
                 for d in ["UPN", "AMS", "AGD", "SER", "LOC", "PLN"]: 
                     tda_dict[d] = myo.loc[uid][d]               
                 newunit.InitTDA(**tda_dict)
                 
-                #print("Adding node: ",myo.loc[uid]["UPN"])
+                #Adding node to the unit network
                 self.unit_network.add_node(myo.loc[uid]["UPN"])
-                #print("Adding Edge from: ",myo.loc[uid]["UPN"]," to: ", Units.loc[uic]["NID"])
+                #Adding Command Relationship
                 self.unit_network.add_edge(myo.loc[uid]["UPN"], Units.loc[uic]["NID"])
-                    
+            
+            #BELOW PROBABLY IS BETTER SOMEWHERE ELSE
             for (n_i,i_w) in netw:
                 for (n_j,j_w) in netw:
                     if (n_j != j_w):
@@ -144,8 +165,8 @@ class Enterprise(Model):
                             
             #Add location to Schedule
             #print("Adding unit:", newunit.getname())
-            newunit.RecordCivPay()
-            newunit.RecordFillRate()
+            newunit.Initialize()
+            
             #self.schedule.add(newunit)
             self.units[newunit.uic] = newunit
             
@@ -154,16 +175,26 @@ class Enterprise(Model):
             
         self.num_locations = i
 
-        #Load TDAs into Locations
-
+        #self.jobboard = JobBoard(0,self)
+        #self.schedule.add(self.jobboard)
+    
+    ##########################################################################        
+    #
     def PrintLocations(self):
         for a in self.schedule.agents:
             print(a)
             
+    ##########################################################################        
+    #
     def RemoveAgent(self,agt):
-        self.deadpool.append(agt)
+        if agt.status == BaseAgent.AGT_STATUS["retired"]:
+            self.deadpool["retired"].append(agt)
+        elif agt.status == BaseAgent.AGT_STATUS["released"]:
+            self.deadpool["released"].append(agt)
         self.schedule.remove(agt)
         
+    ##########################################################################        
+    #
     def step(self):
         print("Model step ",self.date)
         self.date = self.date + dt.timedelta(days=1)
