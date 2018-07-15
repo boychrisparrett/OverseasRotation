@@ -12,6 +12,7 @@ import numpy.random as npr
 import pandas as pd
 from Location import *
 from Experience import * 
+from TaskGenerator import *
 from mesa import Agent
 
 ##############################################################################            
@@ -23,6 +24,8 @@ from mesa import Agent
 GLBL_AGT_MRA = 57.0
 GLBL_AGT_MIN_TIS = 20.0
 GLBL_AGT_MAX_TIS = 40.0
+GLBL_AGT_STD_SHIFT = 8.0
+
 class BaseAgent(Agent):
     AGT_ATTR_STR = ["Skills","MssnExperience","Location"]
     AGT_STATUS = {"unassigned":0,"assigned":1, "extended":2, "nonextended":3,"released":4,"retired":5}
@@ -45,14 +48,17 @@ class BaseAgent(Agent):
         self.grade = 7                     #Base grade is GG-07... prob not
         self.series = 132                  #Series is typically 0132 for closed system
         self.paystep = 1                   #Default to base step
+        self.oplevel = 0                   #Level in the operational org-chart
         self.famsize = 0                   #Family size... important for PCS costs
         self.salary = 0.0                  #Civpay
         self.curloc = ""                   #Location determines locality supplement 
+        self.clockhours = 0                #Total hours worked
+        self.chunks = []                    #Total tasks completed
         
         # Employment related information
         self.status = BaseAgent.AGT_STATUS["unassigned"]     #Start off unattached
         self.joboffer = None                                 #Any job offers?
-        self.initiative = npr.normal(0.7,0.05)               #Initiative
+        self.initiative = npr.normal(0.85,0.05)              #Initiative
         self.retire_eligible = False                         #Retirement eligble flag
         self.PLN = None
         
@@ -60,7 +66,8 @@ class BaseAgent(Agent):
         self.unit = ""                                       #Current Unit
         self.funcexp = FuncSkillSet()                        #Current Functional Experience
         self.geoexp = RgnlSkillSet()                         #Current Regional Experience
-        self.network = None                                  #Total network... unbounded
+        self.task = ""
+        self.network = model.agt_network                     #Total network... unbounded
         self.personalnet = None                              #Employee's personal network
         self.teammembers = []                                #list of employee's teammember
         
@@ -77,6 +84,7 @@ class BaseAgent(Agent):
     def setfamsize(self, v): self.famsize = v
     def setinitiative(self, v): self.initiative = v
     def setdwell(self, v): self.dwell = v
+    def setoplevel(self, v): self.oplevel = v
         
     def getUPI(self): return self.UPI
     def gettype(self): return self.type
@@ -89,6 +97,8 @@ class BaseAgent(Agent):
     def getinitiative(self): return self.initiative
     def getfuncexp(self): return self.funcexp
     def getgeoexp(self): return self.geoexp
+    def getoplevel(self): return self.oplevel
+    
     #for array calculations
     def getfuncexparray(self): return self.funcexp.getSkillArray()
     def getgeoexparray(self): return self.geoexp.getSkillArray()
@@ -97,69 +107,9 @@ class BaseAgent(Agent):
     # Network Specific routines
     def getteammembers(self): return self.teammembers
     def setteammembers(self,team): self.teammembers = team
-           
-    ############################################################################  
-    # UpdatePersNet: 
-    def UpdatePersNet(self,nbunch):
-        nb = nbunch
-        nb.append(self.UPI) #Add self to the network
-        if self.personalnet is None:
-            self.personalnet = nx.subgraph(self.network,nb)
-        else:
-            lbn = self.getteammembers()
-            self.personalnet = nx.subgraph(self.network,(*nb,*lbn))
-            
-    ############################################################################  
-    # UpdateLocation: Change Agent's location to a different unit
-    def UpdateLocation(self, loc, deros):
-        # Record location history
-        self.lochist[self.model.date] = self.curloc
-        
-        # Reset Dwell time
-        self.dwell = 1
-        
-        # Update to current location
-        self.curloc = loc
-        
-        if deros is not None:
-            self.deros = deros
-        
-    ############################################################################  
-    #
-    def InitFunctionalExp(self,exp):
-        #Set initial functional experience
-        self.funcexp.initfunc(exp)
-        
-    ############################################################################  
-    #
-    def InitGeographicExp(self,exp):
-        #Set initial geographic experience
-        self.geoexp.initrgnl(exp)
-        
-    ############################################################################  
-    #
-    def UpdateFunctionalExp(self,exp):
-        for e in Functions:
-            if e.value in exp:
-                self.funcexp.incSkill(e.name)
-            else:
-                self.funcexp.decSkill(e.name)
-        
-    ############################################################################  
-    #
-    def UpdateGeographicExp(self,exp):
-        for e in Regions:
-            if e.value in exp:
-                self.geoexp.incSkill(e.name)
-            else:
-                self.geoexp.decSkill(e.name)
-                
-    ############################################################################  
-    #
-    def UpdateSalary(self,sal):
-        self.salhist[self.model.date] = sal
-        self.salary = sal
     
+    def assigntask(self,t): self.task = t
+
     ############################################################################  
     #
     # Requires: OCN, TYP, GRD, SER, STP, LOC, GEX, FEX, SAL, LNM, TEAM
@@ -194,21 +144,80 @@ class BaseAgent(Agent):
         self.dwell = kwargs["DWL"]             #Current time at current duty station
         self.unit = kwargs["UNT"]
         self.status = BaseAgent.AGT_STATUS["assigned"]
+        self.chunks.append(self.model.learningcurve.GetChunkLevel_X(kwargs["EXP"]))
         
+    ############################################################################  
+    #
+    def InitFunctionalExp(self,exp):
+        #Need to read this in better
+        v = (self.model.date-self.SCD).days * 0.8 * self.model.learningcurve.GetAvgChnkPerDay()
+        #Set initial functional experience with a constant at this point
+        self.funcexp.initskills_c(exp,self.model.learningcurve.GetExpLevel_Y(v))
+        
+    ############################################################################  
+    #
+    def InitGeographicExp(self,exp):
+        v = (self.model.date-self.SCD).days * 0.8 * self.model.learningcurve.GetAvgChnkPerDay()
+        
+        #Set initial geographic experience with a constant at this point
+        self.geoexp.initskills_c(exp,self.model.learningcurve.GetExpLevel_Y(v))
+        
+    ############################################################################  
+    # UpdatePersNet: 
+    def UpdatePersNet(self,nbunch):
+        nb = nbunch
+        nb.append(self.UPI) #Add self to the network
+        if self.personalnet is None:
+            self.personalnet = nx.subgraph(self.network,nb)
+        else:
+            lbn = self.getteammembers()
+            self.personalnet = nx.subgraph(self.network,(*nb,*lbn))
+    
+    ############################################################################  
+    #
+    def UpdateSalary(self,sal):
+        self.salhist[self.model.date] = sal
+        self.salary = sal
+            
+    ############################################################################  
+    # UpdateLocation: Change Agent's location to a different unit
+    def UpdateLocation(self, loc, deros):
+        # Record location history
+        self.lochist[self.model.date] = self.curloc
+        # Reset Dwell time
+        self.dwell = 1
+        # Update to current location
+        self.curloc = loc
+        if deros is not None:
+            self.deros = deros
+        
+    ############################################################################  
+    #
+    def UpdateFunctionalExp(self,exp,rate):
+        pass
+
+    ############################################################################  
+    #
+    def UpdateGeographicExp(self,exp,rate):
+        pass
+    
+    def CompareSkillsToTask(self):
+        pass
         
     ############################################################################  
     #
     def step(self):
-        # print("BaseAgent::Step")
-        # Is it in a new area with more pay?
-        # if job has my skills, will I apply?
+        #AGE Agents
         if (self.status ==  BaseAgent.AGT_STATUS["assigned"] or self.status == 
             BaseAgent.AGT_STATUS["extended"] or self.status ==  BaseAgent.AGT_STATUS["nonextended"]):
-            #Agent is still active in the organization....
+            
+            #Agent is still active in the organization... increase timesteps
             self.dwell += 1
             self.daysinstep += 1
             timeinservice = (self.model.date - self.SCD).days / 365
             age = (self.model.date - self.DoB).days / 365
+            
+            #Check for possibility of retirement
             if (timeinservice > GLBL_AGT_MIN_TIS) and (age > GLBL_AGT_MRA):
                 self.retire_eligible = True
                 print("\t **** Retirement Eligible ****")
@@ -220,6 +229,50 @@ class BaseAgent(Agent):
                 self.daysinstep = 1
                 self.salary = self.model.paytable.GetSalVal(self.curloc,self.grade,self.paystep)
             
+            #Clock in hours... increase experience
+            if self.model.date.isoweekday() < 6:
+                self.clockhours += GLBL_AGT_STD_SHIFT
+                #Check assigned task vs. current skills
+                
+                #self.funcexp.PrettyPrint()
+                #self.task.PrettyPrint()
+            
+                surplus_reg, numtasks, surplus_funarr = self.task.MeetTask(self.getgeoexp(),self.getfuncexp())
+                
+                #print("****\nsurplus_reg",surplus_reg )
+                #print("numtasks", numtasks)
+                #print("surplus_funarr",surplus_funarr)
+                
+                for ln in self.network.out_edges(self.UPI):
+                    self.network.edges[ln]["reg"] = surplus_reg
+                    self.network.edges[ln]["func"] = surplus_funarr
+                #Sum things ups    
+                for ln in self.network.in_edges(self.UPI):
+                    #self.network.edges[ln]["reg"] = surplus_reg
+                    #self.network.edges[ln]["func"] = surplus_funarr
+                    #print("\t\tOut Link weight:",self.network.edges[ln]["func"])
+                    #get all inlinks?
+                    pass
+
+                self.chunks.append(self.chunks[-1]+numtasks)
+                
+        
+                for partner in self.teammembers:
+                    #Sum each partner's contributions
+                    #Add to overall effort
+                    pass
+                
+                #if self.CompareSkillsToTask():
+                #    #If yes go...
+                #    print("Agt:",self.UPI," has the skills")
+                #else:
+                #    #Can/will Agent satisfy by themselves?
+                #    #If No, ask a neighbor to team...
+                #    #If Neighbor has room for team, link-up
+                #    pass
+                #    #or nghbr in self.network.neighbors(self.UPI):
+                #    #   print("\t",nghbr)
+                
         elif  self.status == BaseAgent.AGT_STATUS["unassigned"]:
             print("unassigned")
             #Degrade skills
@@ -241,9 +294,9 @@ class BaseAgent(Agent):
         print("\t  Fam Size: ",self.famsize)
         print("\t     Dwell: ",self.dwell)
         print("\t  func exp: ")
-        self.funcexp.printSkill()
+        self.funcexp.PrettyPrint()
         print("\t   geo exp: ")
-        self.geoexp.printSkill()
+        self.geoexp.PrettyPrint()
         print("\t     DEROS: ",self.DEROS)
         print("##-------------------------------##")
         

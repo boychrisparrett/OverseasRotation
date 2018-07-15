@@ -16,6 +16,7 @@ from Location import *
 from Unit import *
 from Billet import *
 from PayTable import *
+from TaskGenerator import *
 from mesa import Model, Agent
 from mesa.time import RandomActivation
 
@@ -57,11 +58,13 @@ class Enterprise(Model):
         self.deadpool = {"retired":[],"released":[]}   #Employee history
         self.paytable = None                           #Enterprise Pay Scale
         self.jobboard = None                           #Job Board
-        self.agt_network = nx.Graph()                  #Network of agents
+        self.agt_network = nx.DiGraph()                  #Network of agents
         self.unit_network = nx.DiGraph()               #Organizational Structure
         self.unit_displaypos = None                    #Display units
         self.schedule = RandomActivation(self)         #MESA Activation Schedule
-    
+        self.taskgenerator = TaskGenerator(self)
+        self.learningcurve = LearningCurve(2.5)
+        
     ##########################################################################        
     #
     def Setup(self):
@@ -112,6 +115,7 @@ class Enterprise(Model):
             
             #keep track of Agents IDs for network instantiation
             netw = []
+            supv_ID=0 
             for uid in myo.index:
                 newagt = None
                 if myo.loc[uid]["EID"] != "VACANT":
@@ -122,7 +126,7 @@ class Enterprise(Model):
                     emp_dict = {"SAL":s, "UNT": newunit}
                 
                     #build required parameter string
-                    for d in ["OCN", "TYP", "GRD", "SER", "STP", "LOC", "LNM", "DWL", "SCD", "FMS", "AGE","TIG"]:
+                    for d in ["OCN", "TYP", "GRD", "SER", "STP", "LOC", "LNM", "DWL", "SCD", "FMS", "AGE","TIG","SUP","EXP"]:
                         emp_dict[d] = myo.loc[uid][d]
                     emp_dict["FEX"] = myo.loc[uid]["FEX"].split("|")
                     emp_dict["GEX"] = myo.loc[uid]["GEX"].split("|")
@@ -132,8 +136,11 @@ class Enterprise(Model):
                     #Forceset the dwell on initialization
                     newagt.setdwell(myo.loc[uid]["DWL"])
                     
+                    #Keep track of supervisor node
+                    if emp_dict["SUP"]>0: supv_ID = newagt.getUPI()
+                        
                     #Record the agent and their respective dwell
-                    netw.append([newagt.getUPI(),newagt.getdwell()])
+                    netw.append(newagt.getUPI())
                     
                     #add node to the network, UPI is the Node ID
                     self.agt_network.add_node(newagt.getUPI(),object=newagt)
@@ -156,13 +163,30 @@ class Enterprise(Model):
                 #Adding Command Relationship
                 self.unit_network.add_edge(myo.loc[uid]["UPN"], Units.loc[uic]["NID"])
             
-            #BELOW PROBABLY IS BETTER SOMEWHERE ELSE
-            for (n_i,i_w) in netw:
-                for (n_j,j_w) in netw:
-                    if (n_j != j_w):
-                        dwellweight = i_w / j_w #Risk of DIV/0
-                        self.agt_network.add_edge(n_i,n_j,weight=dwellweight)
-                            
+            nnodes = len(netw)
+            for i in range(nnodes):
+                if supv_ID == netw[i]: 
+                    for n_j in netw:
+                        #if (n_j != n_i): self.agt_network.add_edge(n_i,n_j)
+                        if (n_j != supv_ID): 
+                            self.agt_network.add_edge(supv_ID,n_j,weight=0)
+                else:
+                    left = i-1
+                    if left < 0: left = nnodes-1
+                    if netw[left]==supv_ID:
+                        if left == 0:left = nnodes-1
+                        else:left -= 1
+
+                    rght=  i+1
+                    if rght>=nnodes:rght=0
+                    if netw[rght]==supv_ID: 
+                        if rght+1 == nnodes: rght=0
+                        else:rght +=1
+
+                    self.agt_network.add_edge(netw[i],netw[left],weight=0)
+                    self.agt_network.add_edge(netw[i],netw[rght],weight=0)
+                i+=1
+            
             #Add location to Schedule
             #print("Adding unit:", newunit.getname())
             newunit.Initialize()

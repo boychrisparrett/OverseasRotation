@@ -34,15 +34,21 @@ class Unit(Agent):
         self.funcskills = FuncSkillSet()
         
         #Geographic Organizational Focus and Experience
+        self.geofocus = 1 #kwargs["GEO"]
         self.agg_geoexp = None   #Aggregated Regional Experience Pandas Dataframe
         self.geoskills = RgnlSkillSet()
+        
+        self.unit_network = model.unit_network
         
         self.TDA = {}
         self.roster = {}
         self.vacann = []
+        
+        #Stats
         self.civpay = []
         self.fillrate = []
-
+        self.aggfuncarr = []
+        self.aggregnarr = []
     ############################################################################  
     #
     def getUIC(self): return self.uic
@@ -81,16 +87,46 @@ class Unit(Agent):
         self.RecordCivPay()
         self.RecordFillRate()
         billets = self.TDA.keys()
-        self.agg_funcexp = pd.DataFrame(index=list(billets),columns=[f.name for f in Functions],data=0.0)
-        self.agg_geoexp = pd.DataFrame(index=list(billets),columns=[r.name for r in Regions],data=0.0)
+        
+        self.agg_funcexp = pd.DataFrame(index=list(billets),columns=[f for f in Functions().functions.keys()],data=0.0)
+        self.agg_geoexp = pd.DataFrame(index=list(billets),columns=[r for r in GeoRegions().regions.keys()],data=0.0)
+        
+        len_f = len(Functions().functions)
+        len_r = len(GeoRegions().regions)
         for paraln in billets:
             eid = self.TDA[paraln].occupant
             if eid is not None:
                 self.agg_funcexp.loc[paraln] = self.roster[eid].getfuncexparray()
                 self.agg_geoexp.loc[paraln] = self.roster[eid].getgeoexparray()
+                f_focus = np.random.randint(2,6)
+                if int(self.roster[eid].grade) == 14:
+                    f_focus = 1
+                t = self.model.taskgenerator.NewTask(self.geofocus,f_focus) 
+                self.roster[eid].assigntask(t)
             else:
-                self.agg_funcexp.loc[paraln] = np.zeros(len(Functions))
-                self.agg_geoexp.loc[paraln] = np.zeros(len(Regions))
+                #VACANT Billet... insert zeros
+                self.agg_funcexp.loc[paraln] = np.zeros(len_f)
+                self.agg_geoexp.loc[paraln] = np.zeros(len_r)
+    
+   
+    
+    ############################################################################  
+    #
+    def UpdateStats(self):
+        self.RecordCivPay()
+        self.RecordFillRate()
+        
+        funcsum=FuncSkillSet()
+        regsum =RgnlSkillSet()
+        for paraln in self.TDA.keys():
+            eid = self.TDA[paraln].occupant
+            if eid is not None:
+                funcsum = funcsum + self.roster[eid].getfuncexp()
+                regsum = regsum + self.roster[eid].getgeoexp()
+        
+        self.aggfuncarr.append(funcsum.getSkillArray())
+        self.aggregnarr.append(regsum.getSkillArray())
+        
     ############################################################################  
     #
     def AssignEmployee(self,paraln,empagt):
@@ -108,8 +144,8 @@ class Unit(Agent):
         paraln = self.roster[eid].PLN
         
         #Remove experience from the organization
-        self.agg_funcexp.loc[paraln] = np.zeros(len(Functions))
-        self.agg_geoexp.loc[paraln] = np.zeros(len(Regions))
+        self.agg_funcexp.loc[paraln] = np.zeros(len(Functions().functions))
+        self.agg_geoexp.loc[paraln] = np.zeros(len(GeoRegions().regions))
         
         #Remove agent from the unit's authorization table
         self.TDA[paraln].Vacate()
@@ -166,8 +202,7 @@ class Unit(Agent):
     def step(self):
         #print("Unit::Step")
         #record stats at begining of day...
-        self.RecordCivPay()
-        self.RecordFillRate()
+        self.UpdateStats()
         
         #Should check for weekend here... only work M-F...
         '''
@@ -217,7 +252,8 @@ class Unit(Agent):
                     print("Releasing Employee ",eid)
                     self.roster[eid].status = BaseAgent.AGT_STATUS["released"]
                     self.ReleaseEmployee(eid)
-                
+
+            
             #else:
                     #if (date + 240) >= deros and (dwell > 360):
             #       #   if not keypos
