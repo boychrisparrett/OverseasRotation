@@ -65,11 +65,14 @@ class Experience:
         self.experience = {}
         
     #Initialize Skills to a constant val or an array of constants
-    def initskills_c(self,kws,s):
-        for f in kws: self.experience[self.skills[int(f)]] = s
+    def initskill(self,skidx,v):
+        self.experience[self.skills[skidx]] = v
             
-    def initskills_arr(self,kws,s):
-        for f in kws: self.experience[self.skills[int(f)]] = s[int(f)]
+    def initskills_arr(self,exparr):
+        i=1
+        for v in exparr: 
+            self.experience[self.skills[i]] = float(v)
+            i+=1
                     
     #Subtract values to skills from array 
     def subtract(self,kws,varr):
@@ -81,6 +84,7 @@ class Experience:
         return retarr
     
     def hasSkill(self,kw): return (k in self.skills.keys())
+    
     def getSkillLevel(self,kw): 
         return self.experience[self.skills[kw]]
 
@@ -89,6 +93,7 @@ class Experience:
     
     def setSkillLevel(self,kw,lvl): 
         self.experience[self.skills[kw]] = lvl
+        
     def seSkillArray(self,lvls):
         for v in self.skills.keys():
             self.experience[self.skills[v]] = lvls[v]
@@ -111,7 +116,9 @@ class FuncSkillSet(Experience):
         self.skills = Functions().functions
         for f in self.skills:
             self.experience[self.skills[f]] = 0
-        self.ranking = [1/len(self.skills) for x in self.skills]
+        self.numskills = len(self.skills)
+        self.ranking = [1/self.numskills for x in self.skills]
+        
                         
     #Add values to skills from array 
     def __add__(self,other):
@@ -144,11 +151,22 @@ class FuncSkillSet(Experience):
                 else:
                     new.experience[kw] = self.experience[kw]
         return new
-                        
+
+    def __mul__(self,other):
+        new = FuncSkillSet()
+        if type(self) == type(other):
+            for k in new.experience:
+                new.experience[k] = self.experience[k] * other.experience[k]
+        else:
+            for k in self.skills.keys():
+                kw = self.skills[k]
+                new.experience[kw] = self.experience[kw] * other
+        return new
+
     #Add values to skills from array 
     def __truediv__(self,other):
+        new = FuncSkillSet()
         if other != 0:
-            new = FuncSkillSet()
             for k in new.experience:
                 new.experience[k] = self.experience[k] / other
             return new
@@ -167,40 +185,56 @@ class RgnlSkillSet(Experience):
             
     #Add values to skills from array 
     def __add__(self,other):
+        new = RgnlSkillSet()
         if type(self) == type(other):
-            new = RgnlSkillSet()
+            # RgnlSkillSet + RgnlSkillSet
             for k in new.experience:
                 new.experience[k] = self.experience[k] + other.experience[k]
-            return new
         else:
+            # RgnlSkillSet + Task
             for k in self.skills.keys():
                 kw = self.skills[k]
-                if k in other.taskstr["func"]:
-                    i = other.taskstr["func"].index(k)
+                if k in other.taskstr["reg"]:
+                    i = other.taskstr["reg"].index(k)
                     new.experience[kw] = self.experience[kw] + other.tasklevel["func"][i]
                 else:
                     new.experience[kw] = self.experience[kw]
+        return new
     
     #Add values to skills from array 
     def __sub__(self,other):
+        new = RgnlSkillSet()
         if type(self) == type(other):
-            new = RgnlSkillSet()
+            # RgnlSkillSet - RgnlSkillSet
             for k in new.experience:
                 new.experience[k] = self.experience[k] - other.experience[k]
+        else:
+            # RgnlSkillSet - Task
+            for k in self.skills.keys():
+                kw = self.skills[k]
+                if k in other.taskstr["reg"]:
+                    i = other.taskstr["reg"].index(k)
+                    new.experience[kw] = self.experience[kw] - other.tasklevel["func"][i]
+                else:
+                    new.experience[kw] = self.experience[kw]
+        return new
+    
+    def __mul__(self,other):
+        new = RgnlSkillSet()
+        if type(self) == type(other):
+            for k in new.experience:
+                new.experience[k] = self.experience[k] * other.experience[k]
             return new
         else:
             for k in self.skills.keys():
                 kw = self.skills[k]
-                if k in other.taskstr["func"]:
-                    i = other.taskstr["func"].index(k)
-                    new.experience[kw] = self.experience[kw] - other.tasklevel["func"][i]
-                else:
-                    new.experience[kw] = self.experience[kw]
-
+                new.experience[kw] = self.experience[kw] * other
+        return new
+    
     #Add values to skills from array 
     def __truediv__(self,other):
+        new = RgnlSkillSet()
         if other != 0:
-            new = RgnlSkillSet()
             for k in new.experience:
                 new.experience[k] = self.experience[k] / other
             return new

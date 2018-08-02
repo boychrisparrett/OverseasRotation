@@ -11,7 +11,7 @@
 ##############################################################################
 # CLASS:: Billet
 #
-# Purpose: Implements a generic agent in an organization.
+# Purpose: Implements a generic billet for a TDA.
 # Requires: UPN, AMS, AGD, ASR, KEY, OCC, LOC
 class Billet:
     def __init__(self,**kwargs):
@@ -22,8 +22,11 @@ class Billet:
         self.key = kwargs["KEY"]          #Key position?
         self.occupant = kwargs["OCC"]     #Pointer to BaseAgent/Employee
         self.location = kwargs["LOC"]     #Locality of position.
+        self.supv = kwargs["SUP"]         #Is a supervisor?
+        self.status = "Vacant"            #Vacant/Filled/Hiring/Hold
         
-    ## Standard Get routines    
+    ##########################################################################    
+    # Standard Get routines    
     def getupn(self): return self.UPN
     def getamsco(self): return self.AMSCO
     def getprog(self): return self.prog
@@ -32,15 +35,25 @@ class Billet:
     def getoccupant(self): return self.occupant
     def getloc(self): return self.location
     def isKeyPos(self): return self.key
+    def isSupv(self): return self.supv
     
-    ## Set routines
+    ##########################################################################    
+    ## Modifying routines
+    def makeSupv(self): self.supv = True
+    def makeNonSupv(self): self.supv = False
     def KeyPos(self,kp): self.key = kp             #Designate key positions
-    def Fill(self, occ): self.occupant = occ       #Slot employee against billet
-    def Vacate(self): self.occupant = None         #Remove employee from billet
+    def Fill(self, occ): 
+        self.occupant = occ       #Slot employee against billet
+        self.status = "Filled"
+    def Vacate(self): 
+        self.occupant = None         #Remove employee from billet
+        self.status = "Vacant"
     def Restructure(self,ams,grd,ser):             #Restructure billet  
         self.AMSCO = ams
         self.authgrade = grd
         self.authseries = ser
+    ##########################################################################    
+    ## Management Directed Reassignment
     def MDR(self, to_loc): self.location = to_loc  #Move billet to new location
     
     ##########################################################################

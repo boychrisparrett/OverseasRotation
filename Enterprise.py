@@ -49,7 +49,8 @@ class Enterprise(Model):
     #
     def __init__(self,basedate):
         super().__init__(1)
-        self.date = basedate                           #Model Start Date
+        self.basedate = basedate                       #Model Start Date
+        self.date = basedate                           #Model Date Counter
         self.num_baseagents = 0                        #Number of Agents
         self.num_locations = 0                         #Number of Locations
         self.num_units = 0                             #Number of Units
@@ -65,9 +66,11 @@ class Enterprise(Model):
         self.taskgenerator = TaskGenerator(self)
         self.learningcurve = LearningCurve(2.5)
         
+        self.UnitMatrix = None
+        
     ##########################################################################        
     #
-    def Setup(self):
+    def Setup(self,ts=None):
         
         # Load Enterprise Pay Scale from file
         try: self.paytable = PayTable("2018-general-schedule-pay-rates.csv")
@@ -142,7 +145,7 @@ class Enterprise(Model):
                     #Record the agent and their respective dwell
                     netw.append(newagt.getUPI())
                     
-                    #add node to the network, UPI is the Node ID
+                    #add node to the AGENT network, UPI is the Node ID
                     self.agt_network.add_node(newagt.getUPI(),object=newagt)
                     
                     #record number of base agents
@@ -154,7 +157,7 @@ class Enterprise(Model):
                 #Place billet and occupant into TDA
                 #build required parameter string
                 tda_dict = {"OCC":newagt,"KEY":False}
-                for d in ["UPN", "AMS", "AGD", "SER", "LOC", "PLN"]: 
+                for d in ["UPN", "AMS", "AGD", "SER", "LOC", "PLN","SUP"]: 
                     tda_dict[d] = myo.loc[uid][d]               
                 newunit.InitTDA(**tda_dict)
                 
@@ -163,33 +166,9 @@ class Enterprise(Model):
                 #Adding Command Relationship
                 self.unit_network.add_edge(myo.loc[uid]["UPN"], Units.loc[uic]["NID"])
             
-            nnodes = len(netw)
-            for i in range(nnodes):
-                if supv_ID == netw[i]: 
-                    for n_j in netw:
-                        #if (n_j != n_i): self.agt_network.add_edge(n_i,n_j)
-                        if (n_j != supv_ID): 
-                            self.agt_network.add_edge(supv_ID,n_j,weight=0)
-                else:
-                    left = i-1
-                    if left < 0: left = nnodes-1
-                    if netw[left]==supv_ID:
-                        if left == 0:left = nnodes-1
-                        else:left -= 1
-
-                    rght=  i+1
-                    if rght>=nnodes:rght=0
-                    if netw[rght]==supv_ID: 
-                        if rght+1 == nnodes: rght=0
-                        else:rght +=1
-
-                    self.agt_network.add_edge(netw[i],netw[left],weight=0)
-                    self.agt_network.add_edge(netw[i],netw[rght],weight=0)
-                i+=1
-            
             #Add location to Schedule
             #print("Adding unit:", newunit.getname())
-            newunit.Initialize()
+            newunit.Setup()
             
             #self.schedule.add(newunit)
             self.units[newunit.uic] = newunit
@@ -198,9 +177,17 @@ class Enterprise(Model):
             i+=1
             
         self.num_locations = i
-
-        #self.jobboard = JobBoard(0,self)
-        #self.schedule.add(self.jobboard)
+        self.jobboard = JobBoard(0,self)
+        self.schedule.add(self.jobboard)
+        
+        #Setup Master Matrix
+        tups = []
+        if ts is not None:
+            for uic in self.units.keys():
+                for b in self.units[uic].TDA.keys():
+                    tups.append((uic,b)) 
+            idx = pd.MultiIndex.from_tuples(tups, names=["UIC","PLN"])
+            self.UnitMatrix = pd.DataFrame(index=idx,columns=ts,data=0.0)
     
     ##########################################################################        
     #

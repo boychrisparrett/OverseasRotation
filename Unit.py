@@ -11,46 +11,56 @@ from mesa import Agent, Model
 import datetime as dt
 import numpy as np
 import pandas as pd
+import networkx as nx
 from Billet import *
 from Experience import *
 from BaseAgent import *
-##############################################################################            
+##############################################################################
+
 ##############################################################################
 # CLASS:: Unit
 #
 #  Purpose: Implements a generic agent in an organization.
-# Requires: CMD, UIC, NAM       
+#  Requires: CMD, UIC, NAM       
 class Unit(Agent):
     def __init__(self,uid,model,**kwargs):
         super().__init__(uid, model)
+        
+        #Load Unit attributes
         self.cmdno = kwargs["CMD"]
         self.uic = kwargs["UIC"]
         self.name = kwargs["NAM"]
-        #Default values to be set later
+        
+        #Choose the Unit Hiring / Assessment Policy (default values to be set later)
         d = np.random.normal(0.5,0.05)
         self.unitpolicy = {"funcexp":d, "geoexp":(1-d)}
+        
         #Functional Organizational Focus and Experience
-        self.agg_funcexp = None  #Aggregated Functional Experience Pandas Dataframe
-        self.funcskills = FuncSkillSet()
+        self.agg_funcexp = None            #Aggregated Functional Experience Pandas Dataframe
+        self.aggfuncarr = []               #Aggregated functions array over time
         
         #Geographic Organizational Focus and Experience
-        self.geofocus = 1 #kwargs["GEO"]
-        self.agg_geoexp = None   #Aggregated Regional Experience Pandas Dataframe
-        self.geoskills = RgnlSkillSet()
+        self.geofocus = 0                  #kwargs["GEO"]
+        self.agg_geoexp = None             #Aggregated Regional Experience Pandas Dataframe    
+        self.aggregnarr = []               #Aggregated regions array overtime
         
+        #Pointer to model's unit network... for readability
         self.unit_network = model.unit_network
         
-        self.TDA = {}
-        self.roster = {}
-        self.vacann = []
+        #The Unit's personnel records
+        self.TDA = {}          #Force Structure
+        self.roster = {}       #Employee roster 
+        self.vacann = []       #Vacancy Announcements
+        self.teams = nx.DiGraph()
         
         #Stats
-        self.civpay = []
-        self.fillrate = []
-        self.aggfuncarr = []
-        self.aggregnarr = []
+        self.pcscost = 0
+        self.civpay = []       #Civpay overtime
+        self.fillrate = []     #Fillrate overtime
+       
+        
     ############################################################################  
-    #
+    # Standard Get Functions
     def getUIC(self): return self.uic
     def getcmdno(self): return self.cmdno
     def getname(self): return self.name
@@ -59,11 +69,9 @@ class Unit(Agent):
     def getvacann(self): return self.vacann
     def getcivpay(self): return self.civpay
     def getfillrate(self): return self.fillrate
-    def getgeoskills(self): return self.geoskills
-    def getfuncskills(self): return self.funcskills
-    
-    def setgeofocus(self,v): self.geoskills = v
-    def setreqskills(self,v): self.funcskills = v 
+    def gethiringpol(self): return self.unitpolicy 
+    ############################################################################  
+    # Set the hiring policy where fexp + gexp = 1 
     def sethiringpol(self,fexp,gexp=None): 
         if gexp is None or (fexp + gexp != 1.0):
             self.unitpolicy = {"funcexp": fexp, "geoexp":(1.0-fexp)}
@@ -71,71 +79,129 @@ class Unit(Agent):
             self.unitpolicy = {"funcexp": fexp, "geoexp": gexp}
     
     ############################################################################  
-    #
+    # Initialize the force structure by loading billets
     # Requires: UPN, AMS, AGD, ASR, KEY, OCC, LOC, PLN
     def InitTDA(self,**kwargs):
-        # Requires: UPN, AMS, AGD, ASR, KEY, OCC, LOC
-        b = Billet(**kwargs)
+        # Create New Billet
+        b = Billet(**kwargs) # Requires: UPN, AMS, AGD, ASR, KEY, OCC, LOC
+        #Place on the TDA at Para-Line = PLN
         self.TDA[kwargs["PLN"]] = b
+        #If Billet is Occupied by an employee (OCC), assign to that line
         if kwargs["OCC"] is not None:
             kwargs["OCC"].PLN = kwargs["PLN"]
             self.AssignEmployee(kwargs["PLN"],kwargs["OCC"])
+            self.teams.add_node(kwargs["PLN"],occupant=kwargs["OCC"])
+        else:
+            self.teams.add_node(kwargs["PLN"],occupant=None)
             
     ############################################################################  
-    #    
-    def Initialize(self):
+    # Setup the unit for operations
+    def Setup(self):
+        # Collect and record initial civpay
         self.RecordCivPay()
+        
+        # Calculate and record initial fillrate
         self.RecordFillRate()
+        
+        # Formulate list of all billets on the TDA
         billets = self.TDA.keys()
         
+        # Setup the aggregations for stats DataFrame[Billet][functions /Regions]
         self.agg_funcexp = pd.DataFrame(index=list(billets),columns=[f for f in Functions().functions.keys()],data=0.0)
         self.agg_geoexp = pd.DataFrame(index=list(billets),columns=[r for r in GeoRegions().regions.keys()],data=0.0)
         
         len_f = len(Functions().functions)
         len_r = len(GeoRegions().regions)
+        
+        #Build team network first
+        nnodes = list(billets)
+        i=0
+        supv_ID=0
         for paraln in billets:
+            #Get the occupying employee Agent
+            if self.TDA[paraln].isSupv():
+                supv_ID = i 
+                for otherparaln in billets:
+                    if paraln != otherparaln:
+                        self.teams.add_edge(paraln,otherparaln,weight=1,reg=RgnlSkillSet(),func=FuncSkillSet(),t=1)
+            else:
+                left = i-1
+                if left < 0: left = len(nnodes)-1
+                if  left == supv_ID:
+                    if left == 0: left = len(nnodes)-1
+                    else:left -= 1
+                rght=  i+1
+                if rght >= len(nnodes): rght = 0
+                if rght ==supv_ID: 
+                    if rght+1 == len(nnodes): rght=0
+                    else:rght +=1
+                self.teams.add_edge(nnodes[i],nnodes[left],weight=1,reg=RgnlSkillSet(),func=FuncSkillSet(),t=None)
+                self.teams.add_edge(nnodes[i],nnodes[rght],weight=1,reg=RgnlSkillSet(),func=FuncSkillSet(),t=None)
+            i+=1
+                
+        #For each billet, with ID == paraln
+        for paraln in billets:   
             eid = self.TDA[paraln].occupant
             if eid is not None:
+                #Record existing employee Agent 
                 self.agg_funcexp.loc[paraln] = self.roster[eid].getfuncexparray()
                 self.agg_geoexp.loc[paraln] = self.roster[eid].getgeoexparray()
                 f_focus = np.random.randint(2,6)
                 if int(self.roster[eid].grade) == 14:
+                    #DEFAULT to Leadership
                     f_focus = 1
+                    
+                #Generate Task for the Employee
                 t = self.model.taskgenerator.NewTask(self.geofocus,f_focus) 
+                
+                #Assign task to employee - right now randomly
                 self.roster[eid].assigntask(t)
+
             else:
                 #VACANT Billet... insert zeros
                 self.agg_funcexp.loc[paraln] = np.zeros(len_f)
                 self.agg_geoexp.loc[paraln] = np.zeros(len_r)
-    
-   
-    
+         
+            
+        
     ############################################################################  
     #
     def UpdateStats(self):
+        #Record Civpay and Fillrates
         self.RecordCivPay()
         self.RecordFillRate()
         
-        funcsum=FuncSkillSet()
-        regsum =RgnlSkillSet()
+        #Record skill levels
         for paraln in self.TDA.keys():
             eid = self.TDA[paraln].occupant
             if eid is not None:
-                funcsum = funcsum + self.roster[eid].getfuncexp()
-                regsum = regsum + self.roster[eid].getgeoexp()
-        
-        self.aggfuncarr.append(funcsum.getSkillArray())
-        self.aggregnarr.append(regsum.getSkillArray())
+                #Record existing employee Agent 
+                self.agg_funcexp.loc[paraln] = self.roster[eid].getfuncexparray()
+                self.agg_geoexp.loc[paraln] = self.roster[eid].getgeoexparray()
+                i= len(self.roster[eid].chunks) - 1
+                self.model.UnitMatrix.loc[self.uic, paraln][self.model.date] = self.model.learningcurve.GetExpLevel_Y(
+                    self.roster[eid].chunks[i])
+                
+        #Record mean skill levels over time
+        self.aggfuncarr.append(self.agg_funcexp.mean())
+        self.aggregnarr.append(self.agg_geoexp.mean())
         
     ############################################################################  
-    #
+    # Assign an employee agent to the unit: slot in TDA and add to roster
     def AssignEmployee(self,paraln,empagt):
+        print("assigning employee")
         eid = empagt.getUPI()
-        self.TDA[paraln].occupant = eid
-        self.roster[eid] = empagt
-                       
+        if empagt.status == "PCS":
+            self.pcscost = 12500 * empagt.famsize #need a distance factor?
+            empagt.salary = self.model.paytable.GetSalVal(empagt.curloc,empagt.grade,empagt.step)
+        self.TDA[paraln].occupant = eid #Only store the employee ID
+        self.TDA[paraln].status = "assigned"
+        self.TDA[paraln].dwell = 1 
+        self.roster[eid] = empagt       #Point to the actual agent
+        self.roster[eid].PLN = paraln
+
     ############################################################################  
-    #
+    # Release employee... add to released
     def ReleaseEmployee(self,eid):
         #Remove agent from the schedule
         self.model.RemoveAgent(self.roster[eid])
@@ -152,8 +218,8 @@ class Unit(Agent):
         
         #Remove agent from the official roster
         self.roster.pop(eid)
-    
-                
+        self.teams.node[paraln]["occupant"] = None 
+        
     ############################################################################  
     #
     def ExtendEmployee(self,eid):
@@ -166,8 +232,9 @@ class Unit(Agent):
     #
     def RecordCivPay(self):
         daypay = pd.Series([self.roster[eid].getsalary() for eid in self.roster]).sum()
-        #get average daily by dividing by 260
-        self.civpay.append(daypay / 260)
+        #get average daily by dividing by 52 weeks * 5 days/week ==> 260 days
+        self.civpay.append(self.pcscost + daypay / 260)
+        self.pcscost = 0
     
     ############################################################################  
     #
@@ -195,7 +262,7 @@ class Unit(Agent):
         print("\t civpay",self.civpay)
         print("\t fillrate",self.fillrate)
         print("------------------------------")    
-    
+        
         
     ############################################################################  
     #
@@ -204,27 +271,18 @@ class Unit(Agent):
         #record stats at begining of day...
         self.UpdateStats()
         
-        #Should check for weekend here... only work M-F...
-        '''
-        for slot in self.TDA: 
-            if self.TDA[slot].occupant is None:
-                # Move to fill vacancy
-                rpa_dict = {"GEX":self.geofocus, "GEXWGHTS":[0],
-                            "FEX":self.reqskills, "FEXWGHTS":[0],
-                            "UNIT":self, "BILLET":self.TDA[slot], 
-                            "LOC":self.TDA[slot].getloc()}
-                print("\t\t Vacancy Announcement")
-                self.vacann.append( self.model.jobboard.Advertise(**rpa_dict) )
-        '''
+        # Get list of cur_employees from the Roster
         cur_emps = list(self.roster.keys())
         for eid in cur_emps:
+            
             #If Agent is retirement eligible, make the decision
             if self.roster[eid].retire_eligible :
                 if np.random.rand() > 0.80:
                     #right now, it is based on a random draw at 20% chance... this should increase
                     self.roster[eid].status = BaseAgent.AGT_STATUS["retired"]
+                    self.roster[eid].LastStatUpdate = self.model.date
                     
-            #Run through current roster
+            #Run through current roster 
             if self.roster[eid].status == BaseAgent.AGT_STATUS["retired"]:
                 print("Employee Retiring: ", self.roster[eid].lastname, " EID: ",eid, " PARALN: ",self.roster[eid].PLN)
                 #Remove from unit
@@ -243,17 +301,31 @@ class Unit(Agent):
                 if self.roster[eid].dwell >= (1.5*365):
                     if np.random.rand() > 0.05:
                         self.ExtendEmployee(eid)
+                        self.roster[eid].LastStatUpdate = self.model.date
                         print("Extending Employee ",eid," Again")
                     else:
-                        self.roster[eid].status = BaseAgent.AGT_STATUS["nonextended"]       
+                        self.roster[eid].status = BaseAgent.AGT_STATUS["nonextended"]
+                        self.roster[eid].LastStatUpdate = self.model.date
                         #Employee should go on a placement list somewhere...
             elif self.roster[eid].status == BaseAgent.AGT_STATUS["nonextended"]:
                 if self.roster[eid].dwell >= (2*365):
                     print("Releasing Employee ",eid)
                     self.roster[eid].status = BaseAgent.AGT_STATUS["released"]
+                    self.roster[eid].LastStatUpdate = self.model.date
                     self.ReleaseEmployee(eid)
-
-            
+            elif self.roster[eid].status == BaseAgent.AGT_STATUS["Promoted"]:
+                #Update status, change to SUPV (currently one level of promotion)
+                self.roster[eid].LastStatUpdate = self.model.date
+                self.roster[eid].supv = True
+                #Find supervisory position
+                for paraln in self.TDA.keys():
+                    if self.TDA[paraln].isSupv():
+                        if self.TDA[paraln].occupant == "Vacant":
+                            print("POSSIBLE ERROR")
+                        self.TDA[paraln].occupant = self.roster[eid]
+            elif self.roster[eid].status == BaseAgent.AGT_STATUS["PCS"]:
+                print("Need to implement PCS")
+                self.roster[eid].LastStatUpdate = self.model.date
             #else:
                     #if (date + 240) >= deros and (dwell > 360):
             #       #   if not keypos
@@ -263,3 +335,20 @@ class Unit(Agent):
             #    #if date = employee.pcs_date:
             #        #remove from roster
             #        self.ReleaseEmployee()
+        
+        for slot in self.TDA: 
+            if self.TDA[slot].occupant is None:
+                if self.TDA[slot].status == "Vacant":
+                    # Move to fill vacancy]
+                    print("Unit ",self.uic," is generating an RPA for ", slot)
+                    self.TDA[slot].status = "Hiring"
+                    print("*** NEED TO FIGURE OUT HOW TO SPECIFY REQUIRED SKILLS ****")
+                    rpa_dict = {"GEX":list(self.agg_geoexp.sum()), "GEXWGHTS":[0],
+                                "FEX":list(self.agg_funcexp.sum()), "FEXWGHTS":[0],
+                                "UNIT":self, "BILLET":self.TDA[slot], 
+                                "LOC":self.TDA[slot].getloc(), "PARALN": slot}
+                    self.vacann.append( self.model.jobboard.Advertise(**rpa_dict) )
+                elif self.TDA[slot].status is "PCS":
+                    print("PCS:: self.vacann")
+                elif self.TDA[slot].status is "Promote":
+                    print("PCS:: self.vacann")

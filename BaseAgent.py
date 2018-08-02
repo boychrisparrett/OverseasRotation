@@ -38,6 +38,7 @@ class BaseAgent(Agent):
         
         #Time-related Attributes
         self.SCD = model.date              #Service Computation Date
+        self.LastStatUpdate = model.date
         self.DoB = model.date              #Date of birth (calc retirement age)
         self.DEROS = None                  #Date Estimated Return CONUS
         self.dwell = 1                     #Time on current Station
@@ -58,9 +59,11 @@ class BaseAgent(Agent):
         # Employment related information
         self.status = BaseAgent.AGT_STATUS["unassigned"]     #Start off unattached
         self.joboffer = None                                 #Any job offers?
-        self.initiative = npr.normal(0.85,0.05)              #Initiative
+        self.aptitude = npr.normal(0.9,0.05)                 #aptitude
         self.retire_eligible = False                         #Retirement eligble flag
         self.PLN = None
+        self.supv = False
+        
         
         # Agent Interaction Attributes
         self.unit = ""                                       #Current Unit
@@ -68,8 +71,10 @@ class BaseAgent(Agent):
         self.geoexp = RgnlSkillSet()                         #Current Regional Experience
         self.task = ""
         self.network = model.agt_network                     #Total network... unbounded
-        self.personalnet = None                              #Employee's personal network
         self.teammembers = []                                #list of employee's teammember
+        
+        self.applications = {}
+        self.joboffers = {}
         
         #records
         self.salhist = {}                                    #Employee's salary history
@@ -82,10 +87,14 @@ class BaseAgent(Agent):
     def setseries(self, v): self.series = v
     def setpaystep(self, v): self.paystep = v
     def setfamsize(self, v): self.famsize = v
-    def setinitiative(self, v): self.initiative = v
+    def setaptitude(self, v): self.aptitude = v
     def setdwell(self, v): self.dwell = v
     def setoplevel(self, v): self.oplevel = v
+    def setsupv(self,v): self.supv = v
         
+    # Assign task 
+    def assigntask(self,t): self.task = t
+    
     def getUPI(self): return self.UPI
     def gettype(self): return self.type
     def getgrade(self): return self.grade
@@ -94,10 +103,11 @@ class BaseAgent(Agent):
     def getpaystep(self): return self.paystep
     def getsalary(self): return self.salary
     def getfamsize(self): return self.famsize
-    def getinitiative(self): return self.initiative
+    def getaptitude(self): return self.aptitude
     def getfuncexp(self): return self.funcexp
     def getgeoexp(self): return self.geoexp
     def getoplevel(self): return self.oplevel
+    def issupv(self): return self.supv
     
     #for array calculations
     def getfuncexparray(self): return self.funcexp.getSkillArray()
@@ -108,8 +118,6 @@ class BaseAgent(Agent):
     def getteammembers(self): return self.teammembers
     def setteammembers(self,team): self.teammembers = team
     
-    def assigntask(self,t): self.task = t
-
     ############################################################################  
     #
     # Requires: OCN, TYP, GRD, SER, STP, LOC, GEX, FEX, SAL, LNM, TEAM
@@ -138,40 +146,28 @@ class BaseAgent(Agent):
         self.paystep = kwargs["STP"]           #Current pay step
         self.famsize = kwargs["FMS"]           #Family size... for moving costs.
         self.UpdateLocation(kwargs["LOC"], d)  #Location... local market supplement (LMS)
-        self.InitFunctionalExp(kwargs["FEX"])  #Functional experience
-        self.InitGeographicExp(kwargs["GEX"])  #Geographic experience
+        self.InitFunctionalExp(kwargs["FEX"],kwargs["EXP"])  #Functional experience
+        self.InitGeographicExp(kwargs["GEX"],kwargs["EXP"])  #Geographic experience
         self.UpdateSalary(kwargs["SAL"])       #Current salary based on grade-step + LMS
         self.dwell = kwargs["DWL"]             #Current time at current duty station
         self.unit = kwargs["UNT"]
+        self.supv = kwargs["SUP"]
         self.status = BaseAgent.AGT_STATUS["assigned"]
+        self.LastStatUpdate = self.model.date
         self.chunks.append(self.model.learningcurve.GetChunkLevel_X(kwargs["EXP"]))
+    
+    ############################################################################  
+    #
+    def InitFunctionalExp(self,fex,exp):
+        #Get Current position in learning curve
+        self.funcexp.initskills_arr(fex)
         
     ############################################################################  
     #
-    def InitFunctionalExp(self,exp):
-        #Need to read this in better
-        v = (self.model.date-self.SCD).days * 0.8 * self.model.learningcurve.GetAvgChnkPerDay()
-        #Set initial functional experience with a constant at this point
-        self.funcexp.initskills_c(exp,self.model.learningcurve.GetExpLevel_Y(v))
+    def InitGeographicExp(self,gex,exp):
+        #Get Current position in learning curve
+        self.geoexp.initskills_arr(gex)
         
-    ############################################################################  
-    #
-    def InitGeographicExp(self,exp):
-        v = (self.model.date-self.SCD).days * 0.8 * self.model.learningcurve.GetAvgChnkPerDay()
-        
-        #Set initial geographic experience with a constant at this point
-        self.geoexp.initskills_c(exp,self.model.learningcurve.GetExpLevel_Y(v))
-        
-    ############################################################################  
-    # UpdatePersNet: 
-    def UpdatePersNet(self,nbunch):
-        nb = nbunch
-        nb.append(self.UPI) #Add self to the network
-        if self.personalnet is None:
-            self.personalnet = nx.subgraph(self.network,nb)
-        else:
-            lbn = self.getteammembers()
-            self.personalnet = nx.subgraph(self.network,(*nb,*lbn))
     
     ############################################################################  
     #
@@ -193,23 +189,9 @@ class BaseAgent(Agent):
         
     ############################################################################  
     #
-    def UpdateFunctionalExp(self,exp,rate):
-        pass
-
-    ############################################################################  
-    #
-    def UpdateGeographicExp(self,exp,rate):
-        pass
-    
-    def CompareSkillsToTask(self):
-        pass
-        
-    ############################################################################  
-    #
     def step(self):
         #AGE Agents
-        if (self.status ==  BaseAgent.AGT_STATUS["assigned"] or self.status == 
-            BaseAgent.AGT_STATUS["extended"] or self.status ==  BaseAgent.AGT_STATUS["nonextended"]):
+        if (self.status ==  BaseAgent.AGT_STATUS["assigned"] or self.status == BaseAgent.AGT_STATUS["extended"] or self.status ==  BaseAgent.AGT_STATUS["nonextended"]):
             
             #Agent is still active in the organization... increase timesteps
             self.dwell += 1
@@ -220,11 +202,11 @@ class BaseAgent(Agent):
             #Check for possibility of retirement
             if (timeinservice > GLBL_AGT_MIN_TIS) and (age > GLBL_AGT_MRA):
                 self.retire_eligible = True
-                print("\t **** Retirement Eligible ****")
+                #print("\t **** Retirement Eligible ****")
                                 
             #Calculate time for within grade increase... simplistic
             if self.paystep != self.model.paytable.GetStep(self.paystep, self.daysinstep):
-                print("Employee WGI: ", self.UPI)
+                #print("Employee WGI: ", self.UPI)
                 self.paystep += 1
                 self.daysinstep = 1
                 self.salary = self.model.paytable.GetSalVal(self.curloc,self.grade,self.paystep)
@@ -232,65 +214,93 @@ class BaseAgent(Agent):
             #Clock in hours... increase experience
             if self.model.date.isoweekday() < 6:
                 self.clockhours += GLBL_AGT_STD_SHIFT
+                
+                #1 - Give/Take Efforts from teams
+                agg_func_skills = FuncSkillSet()
+                agg_func_skills = agg_func_skills + self.funcexp
+                
+                agg_reg_skills = RgnlSkillSet()
+                agg_reg_skills = agg_reg_skills + self.geoexp
+                
+                #First, try to donate...
+                for ln in self.unit.teams.out_edges(self.PLN):
+                    if self.unit.teams.nodes[ln[1]]["occupant"] is not None:
+                        self.unit.teams.edges[ln]["func"] = agg_func_skills 
+                        agg_func_skills = agg_func_skills - (agg_func_skills / 4)
+                        self.unit.teams.edges[ln]["reg"] = agg_reg_skills
+                        agg_reg_skills = agg_reg_skills - (agg_reg_skills /4)
+                        self.network.add_edge(*ln,t=self.model.date)
+                        
+                #Gather donated effort 
+                for ln in self.unit.teams.in_edges(self.PLN):
+                    if self.unit.teams.nodes[ln[0]]["occupant"] is not None:
+                        agg_func_skills = agg_func_skills + (self.unit.teams.edges[ln]["func"] / 3)
+                        agg_reg_skills = agg_reg_skills + (self.unit.teams.edges[ln]["reg"] / 3)
+                        self.network.add_edge(*ln,t=self.model.date)
+                        
                 #Check assigned task vs. current skills
+                surplus_reg, numtasks, surplus_funarr = self.task.MeetTask(agg_reg_skills, agg_func_skills)
                 
-                #self.funcexp.PrettyPrint()
-                #self.task.PrettyPrint()
-            
-                surplus_reg, numtasks, surplus_funarr = self.task.MeetTask(self.getgeoexp(),self.getfuncexp())
-                
-                #print("****\nsurplus_reg",surplus_reg )
-                #print("numtasks", numtasks)
-                #print("surplus_funarr",surplus_funarr)
-                
-                for ln in self.network.out_edges(self.UPI):
-                    self.network.edges[ln]["reg"] = surplus_reg
-                    self.network.edges[ln]["func"] = surplus_funarr
-                #Sum things ups    
-                for ln in self.network.in_edges(self.UPI):
-                    #self.network.edges[ln]["reg"] = surplus_reg
-                    #self.network.edges[ln]["func"] = surplus_funarr
-                    #print("\t\tOut Link weight:",self.network.edges[ln]["func"])
-                    #get all inlinks?
-                    pass
+                # Chunks per step = (self_effort + SUM(in_effort) - SUM(out_effort)) * self_aptitude
+                addchunks = (self.aptitude * numtasks)
+                self.chunks.append(self.chunks[-1] + addchunks)
 
-                self.chunks.append(self.chunks[-1]+numtasks)
-                
-        
-                for partner in self.teammembers:
-                    #Sum each partner's contributions
-                    #Add to overall effort
-                    pass
-                
-                #if self.CompareSkillsToTask():
-                #    #If yes go...
-                #    print("Agt:",self.UPI," has the skills")
-                #else:
-                #    #Can/will Agent satisfy by themselves?
-                #    #If No, ask a neighbor to team...
-                #    #If Neighbor has room for team, link-up
-                #    pass
-                #    #or nghbr in self.network.neighbors(self.UPI):
-                #    #   print("\t",nghbr)
+                self.funcexp = agg_func_skills * self.model.learningcurve.GetExpLevel_Y(addchunks)
+                self.geoexp  = agg_reg_skills * self.model.learningcurve.GetExpLevel_Y(addchunks)
                 
         elif  self.status == BaseAgent.AGT_STATUS["unassigned"]:
-            print("unassigned")
             #Degrade skills
+            self.dwell += 1
+            self.funcexp *= 0.98
+            self.geoexp *= 0.98
         elif self.status ==  BaseAgent.AGT_STATUS["retired"] or self.status ==  BaseAgent.AGT_STATUS["released"]:
             #This should not ever be entered... 
             print("ALERT: Accessing retired or released employee")
-            
+        
+        if (self.status == ["assigned"] or self.status ==  BaseAgent.AGT_STATUS["extended"] or self.status ==  BaseAgent.AGT_STATUS["nonextended"] ):
+            #Step through job board
+            for advert in self.model.jobboard.getopenings():
+                #IF more money/higher grade and local, apply.
+                opening = self.model.jobboard.openpos[advert]
+                if opening.location == self.curloc and opening.billet.getgrade() > self.grade:
+                    #promotion opportunity in-place
+                    self.applications[advert] = {"status" : "applied"}
+                    self.model.jobboard.Apply(advert,self)
+                elif self.status == BaseAgent.AGT_STATUS["unassigned"] and opening.billet.getgrade() >= self.grade:
+                    self.applications[advert] = {"status" : "applied"}
+                    self.model.jobboard.Apply(advert,self)
+                elif (self.status == BaseAgent.AGT_STATUS["nonextended"] and opening.billet.getgrade() >= 
+                      self.grade and opening.location != self.curloc):
+                    self.applications[advert] = {"status" : "applied"}
+                    self.model.jobboard.Apply(advert,self)
+                    
+        #Check Job Offers
+        joboffers = list(self.joboffers.keys())
+        np.random.shuffle(joboffers)
+        for offer in joboffers:
+            if self.status == "offered":
+                print("Job Offer...")
+                if self.joboffers[offer]["loc"] == self.curloc and self.joboffers[offer]["grade"] > self.grade:
+                    self.status == "Promoted"
+                    self.model.jobboard.AgentAcceptsOffer(offer,self)
+                elif self.joboffers[offer]["grade"] > self.grade:
+                    self.status == "PCS"
+                    self.model.jobboard.AgentAcceptsOffer(offer,self)
+            else:
+                #Nothing... get this out of my queue...
+                self.joboffers.pop(offer)
+                
     ############################################################################  
     #
     def PrettyPrint(self):
-        print("Employee ID: ",self.UPI)
+        print(" Employee ID: ",self.UPI)
         print("\t      Name: ",self.lastname)
         print("\t       Age: ",self.DoB)
         print("\t%s-%04d-%02d step %02d"%(self.type,self.series,self.grade,self.paystep))
         print("\t  Location: ",self.curloc)
         print("\t    Salary: $%6.2f"%(self.salary))
         print("\t       SCD: ",self.SCD)
-        print("\tInitiative: ",self.initiative)
+        print("\t  aptitude: ",self.aptitude)
         print("\t  Fam Size: ",self.famsize)
         print("\t     Dwell: ",self.dwell)
         print("\t  func exp: ")
