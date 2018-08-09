@@ -1,3 +1,12 @@
+##############################################################################
+# Author: Christopher M. Parrett 
+# George Mason University, Department of Computational and Data Sciences
+# Computational Social Science Program
+#
+# Developed on a Windows 10 platform, AMD PhenomII X6 3.3GHz w/ 8GB RAM
+# using Python 3.5.2 | Anaconda 4.2.0 (64-bit).
+##############################################################################
+##############################################################################
 import datetime as dt
 import pandas as pd
 import networkx as nx
@@ -7,9 +16,14 @@ from Location import *
 from Unit import *
 from Billet import *
 from PayTable import *
+from TaskGenerator import *
 from mesa import Model, Agent
 from mesa.time import RandomActivation
 
+
+##############################################################################
+# ReadNetLayout
+#
 def ReadNetLayout(file):
     G = nx.DiGraph()
     retlay = nx.random_layout(G)
@@ -23,28 +37,44 @@ def ReadNetLayout(file):
             G.add_edge(int(flds[0]),int(flds[1]),weight=float(flds[2]))
         else:
             pass
-    return G, retlay   
+    return G, retlay
 
+##############################################################################
+# CLASS:: Enterprise
+#
+#  Purpose: Implements a generic agent in an organization.
+# Requires: FEX, FEXWGHTS, GEX, GEXWGHTS, UNIT, BILLET, LOC, EXP, LAG
 class Enterprise(Model):
-    def __init__(self,basedate):
+    ##########################################################################        
+    #
+    def __init__(self,basedate,fn=None):
         super().__init__(1)
-        self.date = basedate
-        self.num_baseagents = 0
-        self.num_locations = 0
-        self.locations = {}
-        self.schedule = RandomActivation(self)
-        self.paytable = PayTable("2018-general-schedule-pay-rates.csv")
-        self.units = {}
-        self.deadpool = []
-        #
-        #self.jobboard = JobBoard(0,self)
-        #self.schedule.add(self.jobboard)
+        self.basedate = basedate                       #Model Start Date
+        self.date = basedate                           #Model Date Counter
+        self.num_baseagents = 0                        #Number of Agents
+        self.num_locations = 0                         #Number of Locations
+        self.num_units = 0                             #Number of Units
+        self.locations = {}                            #Dictionary of Locations
+        self.units = {}                                #Dictionary of Units
+        self.deadpool = {"retired":[]}                 #Employee history
+        self.paytable = None                           #Enterprise Pay Scale
+        self.jobboard = None                           #Job Board
+        self.agt_network = nx.DiGraph()                #Network of agents
+        self.unit_network = nx.DiGraph()               #Organizational Structure
+        self.unit_displaypos = None                    #Display units
+        self.schedule = RandomActivation(self)         #MESA Activation Schedule
+        self.taskgenerator = TaskGenerator(self)
+        self.learningcurve = LearningCurve(2.5)
+        self.filename = fn
+        self.UnitMatrix = None
         
-        self.agt_network = nx.Graph()
-        self.unit_network = nx.DiGraph()
-        self.unit_displaypos = None
+    ##########################################################################        
+    #
+    def Setup(self,ts=None):
         
-    def LoadData(self):
+        # Load Enterprise Pay Scale from file
+        try: self.paytable = PayTable("2018-general-schedule-pay-rates.csv")
+        except: print("Error loading Pay Table!")
         
         #Read in locations data
         #--> LOC, GLC, LMS, OPP, OCN, ACT, OPP
@@ -55,7 +85,7 @@ class Enterprise(Model):
         for l in locs.index:
             loc_params = {"GLC":locs.loc[l]["GLC"],"OPP":locs.loc[l]["OPP"],"OCN":locs.loc[l]["OCN"],
                           "LMS":locs.loc[l]["LMS"],"ACT":locs.loc[l]["ACT"]}
-            loc = Location(locs.loc[l]["LOC"],self,**loc_params)
+            loc = Location(locs.loc[l]["LOC"],**loc_params)
             self.locations[locs.loc[l]["LOC"]] = loc
             self.num_locations+=1
         
@@ -68,8 +98,11 @@ class Enterprise(Model):
         
         #Read in TDA data
         #--> UIC,UPN,LOCID,PLN,GRD,SER,STP,CMD,FND,OCN,EID,LNM,DERS,FMSZ,DWL,SKLZ,EXP,SCD
-        TDAData = pd.DataFrame().from_csv("tdadata.csv").groupby("UIC")
-    
+        if self.filename == None:
+            TDAData = pd.DataFrame().from_csv("tdadata.csv").groupby("UIC")
+            #TDAData = pd.DataFrame().from_csv("IDEAL_tdadata.csv").groupby("UIC")
+        else:
+            TDAData = pd.DataFrame().from_csv(self.filename).groupby("UIC")
         #Establish units
         unit_params = {}
         i=1
@@ -88,6 +121,7 @@ class Enterprise(Model):
             
             #keep track of Agents IDs for network instantiation
             netw = []
+            supv_ID=0 
             for uid in myo.index:
                 newagt = None
                 if myo.loc[uid]["EID"] != "VACANT":
@@ -98,24 +132,23 @@ class Enterprise(Model):
                     emp_dict = {"SAL":s, "UNT": newunit}
                 
                     #build required parameter string
-                    for d in ["OCN", "TYP", "GRD", "SER", "STP", "LOC", "LNM", "DWL", "SCD", "FMS", "AGE","TIG"]:
+                    for d in ["OCN", "TYP", "GRD", "SER", "STP", "LOC", "LNM", "DWL", "SCD", "FMS", "AGE","TIG","SUP","EXP"]:
                         emp_dict[d] = myo.loc[uid][d]
                     emp_dict["FEX"] = myo.loc[uid]["FEX"].split("|")
                     emp_dict["GEX"] = myo.loc[uid]["GEX"].split("|")
                     
                     newagt.NewPosition(**emp_dict)
                     
-                    #Unit aggregate experience
-                    newunit.agg_funcexp.add(newagt.getfuncexp())
-                    newunit.agg_geoexp.add(newagt.getgeoexp())
-                    
                     #Forceset the dwell on initialization
                     newagt.setdwell(myo.loc[uid]["DWL"])
                     
+                    #Keep track of supervisor node
+                    if emp_dict["SUP"]>0: supv_ID = newagt.getUPI()
+                        
                     #Record the agent and their respective dwell
-                    netw.append([newagt.getUPI(),newagt.getdwell()])
+                    netw.append(newagt.getUPI())
                     
-                    #add node to the network, UPI is the Node ID
+                    #add node to the AGENT network, UPI is the Node ID
                     self.agt_network.add_node(newagt.getUPI(),object=newagt)
                     
                     #record number of base agents
@@ -124,28 +157,22 @@ class Enterprise(Model):
                     #Add Employee agent to scheduler
                     self.schedule.add(newagt)
                 
-                # Place billet and occupant into TDA
+                #Place billet and occupant into TDA
                 #build required parameter string
                 tda_dict = {"OCC":newagt,"KEY":False}
-                for d in ["UPN", "AMS", "AGD", "SER", "LOC", "PLN"]: 
+                for d in ["UPN", "AMS", "AGD", "SER", "LOC", "PLN","SUP"]: 
                     tda_dict[d] = myo.loc[uid][d]               
                 newunit.InitTDA(**tda_dict)
                 
-                #print("Adding node: ",myo.loc[uid]["UPN"])
+                #Adding node to the unit network
                 self.unit_network.add_node(myo.loc[uid]["UPN"])
-                #print("Adding Edge from: ",myo.loc[uid]["UPN"]," to: ", Units.loc[uic]["NID"])
+                #Adding Command Relationship
                 self.unit_network.add_edge(myo.loc[uid]["UPN"], Units.loc[uic]["NID"])
-                    
-            for (n_i,i_w) in netw:
-                for (n_j,j_w) in netw:
-                    if (n_j != j_w):
-                        dwellweight = i_w / j_w #Risk of DIV/0
-                        self.agt_network.add_edge(n_i,n_j,weight=dwellweight)
-                            
+            
             #Add location to Schedule
             #print("Adding unit:", newunit.getname())
-            newunit.RecordCivPay()
-            newunit.RecordFillRate()
+            newunit.Setup()
+            
             #self.schedule.add(newunit)
             self.units[newunit.uic] = newunit
             
@@ -153,17 +180,33 @@ class Enterprise(Model):
             i+=1
             
         self.num_locations = i
-
-        #Load TDAs into Locations
-
+        self.jobboard = JobBoard(0,self)
+        #self.schedule.add(self.jobboard)
+        
+        #Setup Master Matrix
+        tups = []
+        if ts is not None:
+            for uic in self.units.keys():
+                for b in self.units[uic].TDA.keys():
+                    tups.append((uic,b)) 
+            idx = pd.MultiIndex.from_tuples(tups, names=["UIC","PLN"])
+            self.UnitMatrix = pd.DataFrame(index=idx,columns=ts,data=0.0)
+    
+    ##########################################################################        
+    #
     def PrintLocations(self):
         for a in self.schedule.agents:
             print(a)
             
+    ##########################################################################        
+    #
     def RemoveAgent(self,agt):
-        self.deadpool.append(agt)
+        if agt.status == BaseAgent.AGT_STATUS["retired"]:
+            self.deadpool["retired"].append(agt)
         self.schedule.remove(agt)
         
+    ##########################################################################        
+    #
     def step(self):
         print("Model step ",self.date)
         self.date = self.date + dt.timedelta(days=1)
@@ -174,3 +217,5 @@ class Enterprise(Model):
         #ul = np.random.shuffle(list(self.units.keys()))
         for u in self.units.keys():
             self.units[u].step()
+        
+        self.jobboard.step()
